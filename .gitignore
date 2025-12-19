@@ -139,4 +139,6 @@ data/*
 !data/
 # And keep the data/01_input/ directory and its contents
 !data/01_input/
-!data/01_input/**
+# data/01_input配下のファイル・ディレクトリは無視
+data/01_input/*
+data/01_input/**
