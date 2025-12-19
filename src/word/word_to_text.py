@@ -588,7 +588,7 @@ def main():
             if success:
                 log(f"  結果: 成功")
                 log(f"  [PARENT]セクション数: {parent_count}件")
-                print(f"  ✓ 成功: {output_filename} ([PARENT]セクション: {parent_count}件)")
+                print(f"  [OK] 成功: {output_filename} ([PARENT]セクション: {parent_count}件)")
                 success_count += 1
                 total_parent_sections += parent_count
             else:
