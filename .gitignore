@@ -1,0 +1,142 @@
+# =========================
+# Python-generated files
+# =========================
+__pycache__/
+*.py[ocd]
+*.pyo
+*.pyd
+*$py.class
+*.so
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# =========================
+# Environment variables
+# (often contain secrets or API keys)
+# =========================
+.env
+.env*
+.env.local
+.env.*.local
+
+# =========================
+# Testing and coverage
+# =========================
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+htmlcov/
+.tox/
+.nox/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# =========================
+# Logs
+# =========================
+*.log
+log/
+logs/
+
+# =========================
+# IDE and editor files
+# =========================
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.python-version
+
+# =========================
+# OS-specific files
+# =========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =========================
+# Jupyter Notebook
+# =========================
+.ipynb_checkpoints
+
+# =========================
+# mypy type checker
+# =========================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# =========================
+# Documentation
+# =========================
+docs/_build/
+
+# =========================
+# Project-specific
+# =========================
+faiss_db/
+*.faiss
+*.pkl
+
+# =========================
+# Temporary and backup files
+# =========================
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# =========================
+# Local configuration files
+# =========================
+config.local.*
+.local/
+
+# =========================
+# Data directory (keep data/ and data/01_input/ only)
+# =========================
+# Ignore everything under data/
+data/*
+# But keep the data/ directory itself
+!data/
+# And keep the data/01_input/ directory and its contents
+!data/01_input/
+!data/01_input/**

@@ -1,0 +1,9 @@
+[project]
+name = "jsfit-tsunagiai2-poc-tools"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "python-docx>=1.2.0",
+]
