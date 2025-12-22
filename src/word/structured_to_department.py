@@ -24,6 +24,14 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+# 終了コード（呼び出し元へ通知する契約）
+EXIT_OK = 0  # 正常終了（全ファイル成功、警告相当なし）
+EXIT_ERROR = 1  # 致命的エラー（環境不備などにより処理継続不可能）
+EXIT_WARNING = 2  # 完走したが問題あり（警告、または _ERROR.txt 出力を伴うファイル単位失敗を含む）
+
+# Word内のマーカー
+MARKER_PARENT = "[PARENT]"
+
 # ディレクトリ設定（プロジェクトルートからの相対パス）
 # このスクリプトの位置: (project_root)/src/word/structured_to_department.py
 # プロジェクトルート = このスクリプトの2階層上
@@ -53,6 +61,53 @@ def log(message, also_print=False):
     if also_print:
         print(message)
 
+had_warning = False      # 要素レベルのスキップ等
+had_file_error = False   # ファイル単位の失敗（_ERROR.txt になるもの等）
+
+def notify_warning(file_path: str, message: str):
+    """
+    要素レベルのワーニング（段落/表/テキストボックス等の部分的エラー）を通知する。
+
+    - 処理は継続可能だが、当該要素はスキップされ出力結果が一部欠落する可能性がある。
+    - 上位プロセスが機械的に検知できるよう、stderr に `WARNING:` で出力する。
+
+    Args:
+        file_path: 対象Wordファイルのパス（不明な場合は None/空文字列でも可）
+        message: ワーニング内容（簡潔な要約）
+    """ 
+    global had_warning
+    had_warning = True
+    name = Path(file_path).name if file_path else "-"
+    print(f"WARNING: {name}: {message}", file=sys.stderr)
+
+def notify_file_error(file_path: str, message: str):
+    """
+    ファイル単位の失敗（当該ファイルが処理できず _ERROR.txt を出力する等）を通知する。
+
+    - 当該ファイルは失敗扱いだが、全体処理は継続する。
+    - 上位プロセスが機械的に検知できるよう、stderr に `ERROR:` で出力する。
+
+    Args:
+        file_path: 対象Wordファイルのパス
+        message: エラー内容（簡潔な要約）
+    """
+    global had_file_error
+    had_file_error = True
+    name = Path(file_path).name if file_path else "-"
+    print(f"ERROR: {name}: {message}", file=sys.stderr)
+
+def notify_fatal(message: str):
+    """
+    致命的エラー（環境不備などで処理継続不能）を通知する。
+
+    - 上位プロセスが機械的に検知できるよう、stderr に `FATAL:` で出力する。
+    - 本関数は終了処理を行わない。呼び出し側が終了コード（例: 1）で終了することを想定する。
+
+    Args:
+        message: 致命的エラー内容（簡潔な要約）
+    """
+    print(f"FATAL: {message}", file=sys.stderr)
+
 def extract_department(section_lines):
     """セクションから部署名を抽出する
     Args:
@@ -78,7 +133,7 @@ def split_sections(lines) -> list[list[str]]:
     sections = []
     current = []
     for line in lines:
-        if line.strip() == "[PARENT]":
+        if line.strip() == MARKER_PARENT:
             if current:
                 # 空セクション（全て空行や空文字列のみ）は除外
                 if any(l.strip() != '' for l in current):

@@ -36,7 +36,10 @@ def run_script(script_name):
         sys.exit(result.returncode)
     print(f"=== {script_name} 実行完了 ===\n")
 
-if __name__ == "__main__":
+def main():
     for script in SCRIPTS:
         run_script(script)
     print("\n全処理が正常に完了しました。\n")
+
+if __name__ == "__main__":
+    main()
