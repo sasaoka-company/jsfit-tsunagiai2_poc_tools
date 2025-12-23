@@ -465,12 +465,6 @@ def process_single_file(input_path: Path, output_ok_path: Path, output_error_pat
             # 部署抽出（主要問答の質問範囲から）
             dept = extract_department_from_major_question(major_question_raw)
             if dept is None:
-                stats["warning_count"] += 1
-
-                # 要素レベル警告として上位へ通知
-                notify_warning(str(input_path), f"部署抽出不能（空で出力）: 問答{p_idx}")
-
-                log(f"警告: 部署抽出不能（空で出力）: {input_path.name} / 問答{p_idx}")
                 dept = ""  # 出力は空値
             # 親チャンク出力
             qa_id = f"{id_date}-{qa_seq:03d}"
@@ -657,7 +651,7 @@ def main() -> int:
         log(f"主要問答数: {total_major}件")
         log(f"更問数: {total_followup}件")
         if total_warning > 0:
-            log(f"警告数（部署抽出不能など）: {total_warning}件")
+            log(f"警告数: {total_warning}件")
         log(f"出力先: {OUTPUT_DIR.resolve()}")
         log(f"ログファイル: {log_path.resolve()}")
         log("=" * 70)
