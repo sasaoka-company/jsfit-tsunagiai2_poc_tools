@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 import traceback
 import sys
+from typing import Optional
 
 # 終了コード（呼び出し元へ通知する契約）
 EXIT_OK = 0  # 正常終了（全ファイル成功、警告相当なし）
@@ -63,15 +64,15 @@ def log(message: str, also_print: bool = False) -> None:
 had_warning = False      # 要素レベルのスキップ等
 had_file_error = False   # ファイル単位の失敗（_ERROR.txt になるもの等）
 
-def notify_warning(file_path: str, message: str):
+def notify_warning(file_path: Optional[str], message: str):
     """
-    要素レベルのワーニング（段落/表/テキストボックス等の部分的エラー）を通知する。
+    要素レベルのワーニングを通知する。
 
     - 処理は継続可能だが、当該要素はスキップされ出力結果が一部欠落する可能性がある。
     - 上位プロセスが機械的に検知できるよう、stderr に `WARNING:` で出力する。
 
     Args:
-        file_path: 対象Wordファイルのパス（不明な場合は None/空文字列でも可）
+        file_path: 対象ファイルのパス（不明な場合は None/空文字列でも可）
         message: ワーニング内容（簡潔な要約）
     """ 
     global had_warning
@@ -79,7 +80,7 @@ def notify_warning(file_path: str, message: str):
     name = Path(file_path).name if file_path else "-"
     print(f"WARNING: {name}: {message}", file=sys.stderr)
 
-def notify_file_error(file_path: str, message: str):
+def notify_file_error(file_path: Optional[str], message: str):
     """
     ファイル単位の失敗（当該ファイルが処理できず _ERROR.txt を出力する等）を通知する。
 
@@ -87,7 +88,7 @@ def notify_file_error(file_path: str, message: str):
     - 上位プロセスが機械的に検知できるよう、stderr に `ERROR:` で出力する。
 
     Args:
-        file_path: 対象Wordファイルのパス
+        file_path: 対象ファイルのパス
         message: エラー内容（簡潔な要約）
     """
     global had_file_error
@@ -201,7 +202,7 @@ def validate_marker_lines_are_alone(lines: list[str]) -> list[str]:
     markers = [MARKER_PARENT, MARKER_CHILD, MARKER_QA_SPLIT]
     for idx, line in enumerate(lines, start=1):
         for marker in markers:
-            if marker in line and line != marker:
+            if marker in line and line.strip() != marker:
                 errors.append(f"{idx}行目: マーカーが行単独ではありません: {line!r}")
     return errors
 
@@ -419,8 +420,12 @@ def process_single_file(input_path: Path, output_ok_path: Path, output_error_pat
         # --- 事前バリデーション（致命条件） ---
         fatal_errors = validate_file_structure(lines)
         if fatal_errors:
+            # ファイル単位失敗として上位へ通知
+            notify_file_error(str(input_path), "入力ファイルの構造が不正です（バリデーションエラー）")
+
             # ERRORファイル出力（最小限の内容）
             log(f"致命バリデーションエラー: {input_path.name}", also_print=True)
+
             for msg in fatal_errors:
                 log(f"  - {msg}")
             out_err_lines = ["", "", "ERROR: 入力ファイルの構造が不正です。"] + [f"- {e}" for e in fatal_errors]
@@ -448,6 +453,8 @@ def process_single_file(input_path: Path, output_ok_path: Path, output_error_pat
 
             # 子ブロック抽出
             child_blocks = split_child_blocks(lines, p_start, p_end)
+            if not child_blocks:
+                raise ValueError(f"{p_idx}番目の問答ブロック: {MARKER_CHILD} が1つもありません。")
 
             # 主要問答（最初の子ブロック）
             major_child_start, major_child_end = child_blocks[0]
@@ -459,6 +466,10 @@ def process_single_file(input_path: Path, output_ok_path: Path, output_error_pat
             dept = extract_department_from_major_question(major_question_raw)
             if dept is None:
                 stats["warning_count"] += 1
+
+                # 要素レベル警告として上位へ通知
+                notify_warning(str(input_path), f"部署抽出不能（空で出力）: 問答{p_idx}")
+
                 log(f"警告: 部署抽出不能（空で出力）: {input_path.name} / 問答{p_idx}")
                 dept = ""  # 出力は空値
             # 親チャンク出力
@@ -519,6 +530,10 @@ def process_single_file(input_path: Path, output_ok_path: Path, output_error_pat
     except Exception as e:
         # 例外はファイル全体の致命として ERROR 出力
         err_msg = str(e)
+
+        # ファイル単位失敗として上位へ通知
+        notify_file_error(str(input_path), f"実行時例外: {err_msg}")
+
         log(f"致命エラー: {input_path.name} / {err_msg}", also_print=True)
         log(traceback.format_exc())
 
@@ -529,7 +544,7 @@ def process_single_file(input_path: Path, output_ok_path: Path, output_error_pat
         return False, stats, err_msg
 
 
-def main() -> None:
+def main() -> int:
     """複数のtextファイルを一括処理するメイン関数（新設計準拠）"""
     global log_file
 
@@ -562,8 +577,12 @@ def main() -> None:
         log(f"処理対象ファイル数: {len(all_files)}件", also_print=True)
 
         if not all_files:
-            log(f"処理対象ファイルが見つかりません: {INPUT_DIR / FILE_PATTERN}", also_print=True)
-            return
+            msg = f"処理対象ファイルが見つかりません: {INPUT_DIR / FILE_PATTERN}"
+            log(msg, also_print=True)
+            # 致命として通知
+            notify_fatal(msg)
+
+            return EXIT_ERROR
 
         # 集計
         success_count = 0
@@ -617,6 +636,9 @@ def main() -> None:
                     input_file.rename(moved_path)
                     log(f"  入力ファイルを移動: {input_file} -> {moved_path}")
                 except Exception as move_err:
+                    # 要素レベル警告として上位へ通知
+                    notify_warning(str(input_file), f"done への移動失敗: {move_err}")
+
                     log(f"  入力ファイル移動失敗: {move_err}")
             else:
                 error_count += 1
@@ -640,6 +662,11 @@ def main() -> None:
         log(f"ログファイル: {log_path.resolve()}")
         log("=" * 70)
 
+        # 完走後の終了コード集約
+        if had_warning or had_file_error or error_count > 0:
+            return EXIT_WARNING
+        return EXIT_OK
+    
     finally:
         if log_file:
             log_file.close()
@@ -647,9 +674,10 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except Exception as e:
-        print(f"予期しないエラーが発生しました: {e}")
-        print(f"{LINE_BREAK}--- スタックトレース ---")
-        traceback.print_exc()
-        sys.exit(1)
+        msg = f"致命的エラーが発生しました: {e}"
+        notify_fatal(msg)
+        print(f"{LINE_BREAK}--- スタックトレース ---", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(EXIT_ERROR)

@@ -23,6 +23,7 @@ import traceback
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # 終了コード（呼び出し元へ通知する契約）
 EXIT_OK = 0  # 正常終了（全ファイル成功、警告相当なし）
@@ -61,18 +62,21 @@ def log(message, also_print=False):
     if also_print:
         print(message)
 
+def sanitize_filename(s: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]', "_", s).strip()
+
 had_warning = False      # 要素レベルのスキップ等
 had_file_error = False   # ファイル単位の失敗（_ERROR.txt になるもの等）
 
-def notify_warning(file_path: str, message: str):
+def notify_warning(file_path: Optional[str], message: str):
     """
-    要素レベルのワーニング（段落/表/テキストボックス等の部分的エラー）を通知する。
+    要素レベルのワーニングを通知する。
 
     - 処理は継続可能だが、当該要素はスキップされ出力結果が一部欠落する可能性がある。
     - 上位プロセスが機械的に検知できるよう、stderr に `WARNING:` で出力する。
 
     Args:
-        file_path: 対象Wordファイルのパス（不明な場合は None/空文字列でも可）
+        file_path: 対象ファイルのパス（不明な場合は None/空文字列でも可）
         message: ワーニング内容（簡潔な要約）
     """ 
     global had_warning
@@ -80,7 +84,7 @@ def notify_warning(file_path: str, message: str):
     name = Path(file_path).name if file_path else "-"
     print(f"WARNING: {name}: {message}", file=sys.stderr)
 
-def notify_file_error(file_path: str, message: str):
+def notify_file_error(file_path: Optional[str], message: str):
     """
     ファイル単位の失敗（当該ファイルが処理できず _ERROR.txt を出力する等）を通知する。
 
@@ -88,7 +92,7 @@ def notify_file_error(file_path: str, message: str):
     - 上位プロセスが機械的に検知できるよう、stderr に `ERROR:` で出力する。
 
     Args:
-        file_path: 対象Wordファイルのパス
+        file_path: 対象ファイルのパス
         message: エラー内容（簡潔な要約）
     """
     global had_file_error
@@ -116,7 +120,7 @@ def extract_department(section_lines):
         str or None: 抽出した部署名、見つからなければNone
     """
     for line in section_lines:
-        m = re.match(r"- 部署:(.*)", line)
+        m = re.match(r"\s*-\s*部署:\s*(.*)", line)
         if m:
             return m.group(1).strip()
     return None
@@ -146,18 +150,19 @@ def split_sections(lines) -> list[list[str]]:
             sections.append(current)
     return sections
 
-def process_single_file(input_path, base_filename, timestamp) -> tuple[bool, int, str]:
+def process_single_file(input_path: Path, timestamp: str) -> tuple[bool, int, str | None]:
     """
-    単一ファイルを処理し、部署ごとに分割出力する
+    単一ファイルを処理し、部署ごとに分割出力する.
 
     Args:
         input_path (Path): 入力ファイルのパス
-        base_filename (str): 元のファイル名（拡張子なし）
         timestamp (str): タイムスタンプ文字列（yyyymmddhhmmss形式）
     
     Returns:
         tuple: (成功したか, PARENTセクション数, エラーメッセージ)
     """
+    # 拡張子を除いたファイル名
+    base_filename = input_path.stem
     try:
         # ファイル読み込み
         with open(input_path, encoding='utf-8') as f:
@@ -173,16 +178,16 @@ def process_single_file(input_path, base_filename, timestamp) -> tuple[bool, int
                 sec.pop()
             sections[i] = sec
 
-        # ファイル内から日付を抽出（最初に現れる「- 日付:」）
+        # ファイル内から日付を抽出
         file_date = None
-        date_pattern = re.compile(r"- 日付:\s*(.+)")
+        date_pattern = re.compile(r"\s*-\s*日付:\s*(.+)")
         for line in lines:
             m = date_pattern.match(line)
             if m:
                 file_date = m.group(1).strip()
                 break
         if not file_date:
-            file_date = timestamp  # 日付が見つからない場合はタイムスタンプを使う
+            raise ValueError("ファイル内に日付が見つかりませんでした")
 
         # 部署ごとに正常・エラーセクションを分類
         dept_dict: dict[str, list[list[str]]] = {}
@@ -196,27 +201,33 @@ def process_single_file(input_path, base_filename, timestamp) -> tuple[bool, int
                 if dept not in dept_dict:
                     dept_dict[dept] = []
                 dept_dict[dept].append(sec)
+
             except Exception as e:
                 # 部署名が抽出できない場合も含め、エラーセクションとして記録
+
+                notify_warning(str(input_path), f"セクション処理をスキップ: {e}")
                 error_sections += 1
+
                 # 例外発生時は部署名不明扱い
                 dept = "（部署名なし）"
+
                 if dept not in dept_error_dict:
                     dept_error_dict[dept] = []
                 dept_error_dict[dept].append((sec, f"{e}{LINE_BREAK}{traceback.format_exc()}"))
+
                 # エラー発生セクションの全行をログ出力
                 log(f"  セクションエラー: {e}{LINE_BREAK}{traceback.format_exc()}")
                 for i, line in enumerate(sec):
                     log(f"    エラー発生セクション行[{i+1}]: {line}")
                 continue
 
-        # 出力ディレクトリ（06_after_department/yyyymmddhhmmss）を作成
+        # 出力ディレクトリ作成
         output_dir = OUTPUT_DIR / timestamp
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # ファイル名用に日付をYYYYMMDD形式でゼロ埋め
         date_for_filename = None
-        m = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", file_date)
+        m = re.match(r"\s*(\d{4})年(\d{1,2})月(\d{1,2})日", file_date)
         if m:
             year = m.group(1)
             month = m.group(2).zfill(2)
@@ -232,22 +243,22 @@ def process_single_file(input_path, base_filename, timestamp) -> tuple[bool, int
         # 正常セクション出力
         for dept, sec_list in dept_dict.items():
             # 部署名なしのセクションが1つもなければファイル出力しない
-            if dept == "（部署名なし）" and not sec_list:
-                continue
-            if not sec_list:
-                continue
-            # 部署名なしのセクションが1つもなければファイル出力しない
             if dept == "（部署名なし）" and all(len(s) == 0 for s in sec_list):
                 continue
+
+            if not sec_list:
+                continue
+
             output_lines = ['', '']
             for idx, sec in enumerate(sec_list):
                 output_lines.extend(sec)
                 if idx < len(sec_list) - 1:
                     output_lines.append('')
-            out_name = f"{date_for_filename}_{dept}.txt"
+            safe_dept = sanitize_filename(dept)
+            out_name = f"{date_for_filename}_{safe_dept}.txt"
             out_path = output_dir / out_name
             with open(out_path, 'w', encoding='utf-8') as f:
-                f.write(LINE_BREAK.join(output_lines))
+                f.write(LINE_BREAK.join(output_lines).rstrip(LINE_BREAK) + LINE_BREAK)
 
         # エラーセクション出力（部署単位）
         for dept, err_sec_list in dept_error_dict.items():
@@ -262,19 +273,68 @@ def process_single_file(input_path, base_filename, timestamp) -> tuple[bool, int
                 output_lines.append(err_msg)
                 if idx < len(err_sec_list) - 1:
                     output_lines.append('')
-            out_name = f"{date_for_filename}_{dept}_ERROR.txt"
+            safe_dept = sanitize_filename(dept)
+            out_name = f"{date_for_filename}_{safe_dept}_ERROR.txt"
             out_path = output_dir / out_name
 
             # 出力ファイル書き込み（部署ごと）
             with open(out_path, 'w', encoding='utf-8') as f:
-                f.write(LINE_BREAK.join(output_lines))
+                f.write(LINE_BREAK.join(output_lines).rstrip(LINE_BREAK) + LINE_BREAK)
 
         return True, len(sections), None
 
     except Exception as e:
-        return (False, 0, str(e))
+        # ============================================================
+        # ファイル単位の致命的エラー（このファイルは成功出力できない）
+        # ここでやること:
+        #   1) 上位プロセスが検知できるよう notify_file_error() を呼ぶ
+        #   2) _ERROR.txt を必ず生成する（空振り防止）
+        #   3) EOF改行を必ず付ける（他スクリプトと整合）
+        #   4) 戻り値を (False, 0, err_msg) に統一
+        # ============================================================        
 
-def main():
+        err_msg = str(e)
+
+        # 1) 上位プロセス通知（stderrへ ERROR: を出す契約）
+        notify_file_error(str(input_path), f"ファイル処理に失敗: {err_msg}")
+
+        # 2) ログにも詳細を残す（log_file が開いていればそこへ）
+        #    ※ traceback は解析に必要なので必ず残す
+        log(f"致命エラー: {Path(input_path).name} / {err_msg}", also_print=True)
+        log(traceback.format_exc())
+
+        # 3) _ERROR.txt を出す（最低限の内容 + 末尾改行）
+        #    ※通常出力と同じく OUTPUT_DIR / timestamp 配下にまとめる方針
+        try:
+            output_dir = OUTPUT_DIR / timestamp
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # ファイル単位エラーのファイル名（部署分割はできないので部署名は付けない）
+            error_filename = sanitize_filename(f"{base_filename}_{timestamp}_ERROR.txt")
+            error_path = output_dir / error_filename
+
+            # 先頭に空行2つ + ERROR行 + 詳細
+            out_err_lines = [
+                "", "",
+                "ERROR: 実行時例外が発生しました。",
+                f"- {err_msg}",
+            ]
+
+            # EOF 改行を必ず1つ付与する（rstrip()→+LINE_BREAK の形）
+            with open(error_path, "w", encoding="utf-8") as f:
+                f.write(LINE_BREAK.join(out_err_lines).rstrip(LINE_BREAK) + LINE_BREAK)
+
+        except Exception as write_err:
+            # 4) _ERROR.txt の出力自体に失敗した場合でも、少なくとも通知・ログは残す
+            #    （この場合でもプロセス全体は落とさず、呼び出し側に失敗を返す）
+            notify_file_error(str(input_path), f"_ERROR.txt 出力失敗: {write_err}")
+            log(f"_ERROR.txt 出力失敗: {write_err}", also_print=True)
+            log(traceback.format_exc())
+
+        # 5) 呼び出し側に「このファイルは失敗」と返す
+        return (False, 0, err_msg)
+
+def main() -> int:
     """
     複数のtextファイルを一括処理するメイン関数
     """
@@ -310,10 +370,11 @@ def main():
 
         # 入力ディレクトリの存在確認
         if not input_dir.exists():
-            error_msg = f"入力ディレクトリが存在しません: {input_dir}"
-            log(error_msg, also_print=True)
+            msg = f"入力ディレクトリが存在しません: {input_dir}"
+            log(msg, also_print=True)
             log("ディレクトリを作成してテキストファイルを配置してください。", also_print=True)
-            return
+            notify_fatal(msg)
+            return EXIT_ERROR
         
         # 出力ディレクトリを作成
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -324,9 +385,10 @@ def main():
         log(f"処理対象ファイル数: {len(all_files)}件")
 
         if not all_files:
-            error_msg = f"処理対象ファイルが見つかりません: {input_dir / FILE_PATTERN}"
-            log(error_msg, also_print=True)
-            return
+            msg = f"処理対象ファイルが見つかりません: {input_dir / FILE_PATTERN}"
+            log(msg, also_print=True)
+            notify_fatal(msg)
+            return EXIT_ERROR
 
         print("="*70)
 
@@ -346,15 +408,8 @@ def main():
             log(f"[{idx}/{len(all_files)}] 処理中: {input_file.name}")
             print(f"[{idx}/{len(all_files)}] 処理中: {input_file.name}")
 
-            # 仮の出力ファイル名を生成（エラー時に変更される可能性あり）
-            output_filename = f"{input_file.stem}_{timestamp}.txt"
-            output_path = output_dir / output_filename            
-
-            log(f"  入力ファイル: {input_file}")
-            log(f"  出力ファイル: {output_path}")
-
             # 各ファイル処理
-            success, parent_count, err_msg = process_single_file(str(input_file), str(output_path), timestamp)
+            success, parent_count, err_msg = process_single_file(input_file, timestamp)
 
             if success:
                 log(f"  結果: 成功")
@@ -371,21 +426,10 @@ def main():
                 except Exception as move_err:
                     log(f"  入力ファイル移動失敗: {move_err}")
             else:
-                # エラー時はファイル名を変更
-                error_filename = f"{input_file.stem}_{timestamp}_depart_ERROR.txt"
-                error_path = output_dir / error_filename
-
-                # 既に作成されているファイルがあればリネーム
-                if output_path.exists():
-                    output_path.rename(error_path)
-                    log(f"  ファイルをリネーム: {output_filename} -> {error_filename}")
-
                 log(f"  結果: エラー")
-                log(f"  エラー内容: {error_msg}")
-                log(f"  エラーファイル: {error_filename}")
+                log(f"  エラー内容: {err_msg}")
 
-                print(f"  ✗ エラー: {error_msg}")
-                print(f"     エラーファイル: {error_filename}")
+                print(f"     エラー: {err_msg}")
                 error_count += 1
 
         # 最終結果サマリー
@@ -399,6 +443,10 @@ def main():
         log(f"出力先: {output_dir.resolve()}")
         log(f"ログファイル: {log_path.resolve()}")
         log("="*70)
+
+        if had_warning or had_file_error or error_count > 0:
+            return EXIT_WARNING
+        return EXIT_OK
         
     finally:
         if log_file:
@@ -406,9 +454,10 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except Exception as e:
-        print(f"予期しないエラーが発生しました: {e}")
-        print(f"{LINE_BREAK}--- スタックトレース ---")
-        traceback.print_exc()
-        sys.exit(1)
+        msg = f"致命的エラーが発生しました: {e}"
+        notify_fatal(msg)
+        print(f"{LINE_BREAK}--- スタックトレース ---", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(EXIT_ERROR)

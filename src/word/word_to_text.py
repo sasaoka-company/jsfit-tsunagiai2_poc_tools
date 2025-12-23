@@ -48,15 +48,17 @@ Word文書からマーカーで指定された範囲を抽出し、テキスト�
   - ログ記録: エラー内容をログに記録
 """
 
+import traceback
+import sys
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+
 import docx
 from docx.oxml.text.paragraph import CT_P
 from docx.oxml.table import CT_Tbl
 from docx.table import Table
 from docx.text.paragraph import Paragraph
-import traceback
-import sys
-from pathlib import Path
-from datetime import datetime
 
 # 終了コード（呼び出し元へ通知する契約）
 EXIT_OK = 0  # 正常終了（全ファイル成功、警告相当なし）
@@ -115,7 +117,7 @@ TAG_W_BR = f"{{{NSMAP['w']}}}br"
 had_warning = False      # 要素レベルのスキップ等
 had_file_error = False   # ファイル単位の失敗（_ERROR.txt になるもの等）
 
-def notify_warning(file_path: str, message: str):
+def notify_warning(file_path: Optional[str], message: str):
     """
     要素レベルのワーニング（段落/表/テキストボックス等の部分的エラー）を通知する。
 
@@ -131,7 +133,7 @@ def notify_warning(file_path: str, message: str):
     name = Path(file_path).name if file_path else "-"
     print(f"WARNING: {name}: {message}", file=sys.stderr)
 
-def notify_file_error(file_path: str, message: str):
+def notify_file_error(file_path: Optional[str], message: str):
     """
     ファイル単位の失敗（当該ファイルが処理できず _ERROR.txt を出力する等）を通知する。
 
@@ -473,6 +475,10 @@ def extract_marked_sections(file_name):
                     log(f"    エラー発生テキストボックス: {textbox_text}")
                 except Exception as log_e:
                     log(f"    エラー発生段落内容のログ出力にも失敗: {log_e}")
+
+                # 要素レベル警告として上位へ通知
+                notify_warning(file_name, f"段落処理をスキップ: {e}")
+
                 pass
         
         elif isinstance(element, CT_Tbl):
@@ -517,6 +523,10 @@ def extract_marked_sections(file_name):
                         log(f"    エラー発生表 行[{row_idx+1}]: {' | '.join(row_texts)}")
                 except Exception as log_e:
                     log(f"    エラー発生表内容のログ出力にも失敗: {log_e}")
+
+                # 要素レベル警告として上位へ通知
+                notify_warning(file_name, f"表処理をスキップ: {e}")
+
                 pass
 
     return state.found_parent_count
@@ -555,9 +565,13 @@ def process_single_file(input_path, output_path) -> tuple[bool, int, str]:
     
     except Exception as e:
         error_msg = str(e)
+
+        # ファイル単位失敗として上位へ通知
+        notify_file_error(input_path, f"ファイル処理に失敗: {error_msg}")
+
         return (False, 0, error_msg)
 
-def main():
+def main() -> int:
     """
     複数のWordファイルを一括処理するメイン関数
     """
@@ -594,7 +608,12 @@ def main():
             error_msg = f"入力ディレクトリが存在しません: {input_dir}"
             log(error_msg, also_print=True)
             log("ディレクトリを作成してWordファイルを配置してください。", also_print=True)
-            return
+
+            # ★追加（致命的として通知）
+            notify_fatal(error_msg)
+
+            # 終了コードを返す
+            return EXIT_ERROR
         
         # 出力ディレクトリを作成
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -610,7 +629,12 @@ def main():
         if not target_files:
             error_msg = f"処理対象ファイルが見つかりません: {input_dir / FILE_PATTERN}"
             log(error_msg, also_print=True)
-            return
+
+            # 致命的として通知
+            notify_fatal(error_msg)
+
+            # 終了コードを返す
+            return EXIT_ERROR
         
         print("="*70)
     
@@ -659,7 +683,7 @@ def main():
                 log(f"  エラー内容: {error_msg}")
                 log(f"  エラーファイル: {error_filename}")
                 
-                print(f"  ✗ エラー: {error_msg}")
+                print(f"     エラー: {error_msg}")
                 print(f"     エラーファイル: {error_filename}")
                 error_count += 1
         
@@ -683,6 +707,11 @@ def main():
         print(f"{LINE_BREAK}出力先: {output_dir.resolve()}")
         print(f"ログファイル: {log_path.resolve()}")
     
+        # 完走後の終了コード集約
+        if had_warning or had_file_error or error_count > 0:
+            return EXIT_WARNING
+        return EXIT_OK
+
     finally:
         # ログファイルをクローズ
         if log_file:
@@ -692,9 +721,10 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except Exception as e:
-        print(f"予期しないエラーが発生しました: {e}")
-        print(f"{LINE_BREAK}--- スタックトレース ---")
-        traceback.print_exc()
-        sys.exit(1)
+        msg = f"致命的エラーが発生しました: {e}"
+        notify_fatal(msg)
+        print(f"{LINE_BREAK}--- スタックトレース ---", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(EXIT_ERROR)
