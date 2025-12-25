@@ -53,6 +53,10 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+import zipfile
+import shutil
+import xml.etree.ElementTree as ET
+import tempfile
 
 import docx
 from docx.oxml.text.paragraph import CT_P
@@ -383,6 +387,63 @@ def print_table(table):
             row_data.append(LINE_BREAK.join(p.text for p in cell.paragraphs))
         print(" | ".join(row_data))
 
+def fix_broken_docx(file_path):
+    """Wordファイル内の壊れたリレーションシップ参照を修復
+    
+    リレーションシップファイル(.rels)内のNULLや空の参照を削除して、
+    新しい一時ファイルを作成する
+    
+    Args:
+        file_path (str): 元のWordファイルのパス
+    
+    Returns:
+        str: 修復されたWordファイルのパス（一時ファイル）
+    """
+    # 一時ファイルを作成
+    temp_fd, temp_path = tempfile.mkstemp(suffix='.docx')
+    import os
+    os.close(temp_fd)
+    
+    try:
+        # 元のファイルをZIPとして読み込み、新しいZIPに書き込む
+        with zipfile.ZipFile(file_path, 'r') as zip_read:
+            with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED) as zip_write:
+                for item in zip_read.infolist():
+                    data = zip_read.read(item.filename)
+                    
+                    # .relsファイルの場合、NULLや空の参照を削除
+                    if item.filename.endswith('.rels'):
+                        try:
+                            # XMLとしてパース
+                            root = ET.fromstring(data)
+                            
+                            # 名前空間を取得
+                            ns = {'r': 'http://schemas.openxmlformats.org/package/2006/relationships'}
+                            
+                            # Targetが"NULL"や空のRelationship要素を削除
+                            for rel in root.findall('.//r:Relationship', ns):
+                                target = rel.get('Target', '')
+                                if not target or target.upper() == 'NULL' or target.strip() == '':
+                                    root.remove(rel)
+                                    log(f"    修復: {item.filename} から不正な参照を削除 (Target={target})")
+                            
+                            # 修正したXMLを書き込み
+                            data = ET.tostring(root, encoding='utf-8', xml_declaration=True)
+                        except Exception as e:
+                            # XMLのパースに失敗した場合は元のデータをそのまま使用
+                            log(f"    警告: {item.filename} のパースに失敗、元データを使用: {e}")
+                    
+                    # ファイルを書き込み
+                    zip_write.writestr(item, data)
+        
+        return temp_path
+    
+    except Exception as e:
+        # エラーが発生した場合は一時ファイルを削除
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
 def extract_marked_sections(file_name):
     """Word文書からマーカーで指定された範囲を抽出して出力
     
@@ -395,7 +456,19 @@ def extract_marked_sections(file_name):
     Returns:
         int: 検出した[PARENT]マーカーの数
     """
-    document = docx.Document(file_name)
+    # まず通常の方法で開いてみる
+    temp_file = None
+    try:
+        document = docx.Document(file_name)
+    except KeyError as e:
+        # 'word/NULL' エラーの場合、ファイルを修復して再試行
+        if 'NULL' in str(e) or 'null' in str(e).lower():
+            log(f"  警告: リレーションシップエラーを検出、ファイルを修復します: {e}")
+            temp_file = fix_broken_docx(file_name)
+            log(f"  修復完了: 一時ファイルを使用します")
+            document = docx.Document(temp_file)
+        else:
+            raise
 
     # 状態管理
     state = ExtractionState()
@@ -528,6 +601,15 @@ def extract_marked_sections(file_name):
                 notify_warning(file_name, f"表処理をスキップ: {e}")
 
                 pass
+    
+    # 一時ファイルを使用した場合はクリーンアップ
+    if temp_file:
+        try:
+            import os
+            os.unlink(temp_file)
+            log(f"  一時ファイルを削除しました")
+        except Exception as e:
+            log(f"  警告: 一時ファイルの削除に失敗: {e}")
 
     return state.found_parent_count
 
@@ -565,6 +647,11 @@ def process_single_file(input_path, output_path) -> tuple[bool, int, str]:
     
     except Exception as e:
         error_msg = str(e)
+        
+        # 詳細なスタックトレースをログに記録
+        error_detail = traceback.format_exc()
+        log(f"  致命的エラー: ファイル処理に失敗 - {error_msg}")
+        log(f"  詳細スタックトレース:{LINE_BREAK}{error_detail}")
 
         # ファイル単位失敗として上位へ通知
         notify_file_error(input_path, f"ファイル処理に失敗: {error_msg}")
